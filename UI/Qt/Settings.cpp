@@ -164,4 +164,13 @@ void Settings::set_show_menubar(bool show_menubar)
     emit show_menubar_changed(show_menubar);
 }
 
+QString Settings::spoof_user_agent()
+{
+    return m_qsettings->value("spoof_user_agent", QString("Disabled")).toString();
+}
+void Settings::set_spoof_user_agent(const QString& user_agent)
+{
+    m_qsettings->setValue("spoof_user_agent", user_agent);
+}
+
 }

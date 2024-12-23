@@ -74,6 +74,9 @@ public:
     bool show_menubar();
     void set_show_menubar(bool show_menubar);
 
+    QString spoof_user_agent();
+    void set_spoof_user_agent(const QString& user_agent);
+
 signals:
     void show_menubar_changed(bool show_menubar);
     void enable_search_changed(bool enable);

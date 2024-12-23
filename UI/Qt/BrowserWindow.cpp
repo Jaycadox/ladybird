@@ -484,42 +484,99 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
 
     auto* user_agent_group = new QActionGroup(this);
 
-    auto add_user_agent = [this, &user_agent_group, &spoof_user_agent_menu](auto name, auto const& user_agent) {
+    // If a preset user agent is provided, load that instead of what is saved, and don't attempt to save future spoofed agent choices in that session
+    bool const save_user_agent = !WebView::Application::web_content_options().user_agent_preset.has_value();
+
+    // When attempting to get the preset:
+    //      - Attempt to use the user agent preset provided from CLI
+    //          - If that fails, resort to using the default user agent
+    //      - If no user agent was provided, use the saved value
+    auto user_agent_name = WebView::Application::web_content_options().user_agent_preset
+        .map([](auto const& str) {
+            auto const preset = String::from_utf8(str);
+            if (preset.is_error()) {
+                auto const default_agent = String::from_byte_string("Disabled");
+
+                // Assume that the default agent can be successfully parsed as a UTF-8 string
+                VERIFY(!default_agent.is_error());
+                return default_agent.value();
+            }
+            return preset.value();
+        }).value_or_lazy_evaluated([] {
+            return ak_string_from_qstring(Settings::the()->spoof_user_agent());
+        });
+
+    auto update_user_agent_string = [this, save_user_agent](auto const& name, auto const& user_agent, bool const allow_saving = true) {
+        set_user_agent_string(user_agent);
+        if (save_user_agent && allow_saving) {
+            Settings::the()->set_spoof_user_agent(qstring_from_ak_string(name));
+        }
+    };
+
+    bool is_spoofed_agent_custom = false;
+    auto const user_agent_string = WebView::user_agents.get(user_agent_name).map([](auto const& str) {
+        auto const& agent_string = String::from_utf8(str);
+        if (agent_string.is_error()) {
+            auto const& default_string = String::from_utf8(Web::default_user_agent);
+
+            // Assume that the default agent can be successfully parsed as a UTF-8 string
+            VERIFY(!default_string.is_error());
+            return default_string.value();
+        }
+        return agent_string.value();
+    }).value_or_lazy_evaluated([&is_spoofed_agent_custom, &user_agent_name] {
+        // User agent name was not in list of user agents, thus either the default of a custom one is in use
+        if (user_agent_name == "Disabled") {
+            auto const& default_agent_string = String::from_utf8(Web::default_user_agent);
+
+            // Assume that the default agent can be successfully parsed as a UTF-8 string
+            VERIFY(!default_agent_string.is_error());
+            return default_agent_string.value();
+        } else {
+            // The user agent string is now the user agent name
+            is_spoofed_agent_custom = true;
+            return user_agent_name;
+        }
+    });
+
+    // Update user agent, but don't save the initial loaded value (should only save when the user sets the user agent)
+    update_user_agent_string(user_agent_name.to_byte_string(), user_agent_string.to_byte_string(), false);
+
+    auto add_user_agent = [this, &user_agent_group, &spoof_user_agent_menu, update_user_agent_string](auto const& name, auto const& user_agent) {
         auto* action = new QAction(qstring_from_ak_string(name), this);
         action->setCheckable(true);
         user_agent_group->addAction(action);
         spoof_user_agent_menu->addAction(action);
-        QObject::connect(action, &QAction::triggered, this, [this, user_agent] {
+        QObject::connect(action, &QAction::triggered, this, [this, user_agent, update_user_agent_string, name] {
             for_each_tab([user_agent](auto& tab) {
                 tab.set_user_agent_string(user_agent);
             });
-            set_user_agent_string(user_agent);
+            update_user_agent_string(name, user_agent);
         });
         return action;
     };
 
-    auto const& user_agent_preset = WebView::Application::web_content_options().user_agent_preset;
-    set_user_agent_string(user_agent_preset.has_value() ? *WebView::user_agents.get(*user_agent_preset) : Web::default_user_agent);
-
     auto* disable_spoofing = add_user_agent("Disabled"sv, Web::default_user_agent);
-    disable_spoofing->setChecked(!user_agent_preset.has_value());
+    disable_spoofing->setChecked(user_agent_name == "Disabled");
     for (auto const& user_agent : WebView::user_agents) {
         auto* spoofed_user_agent = add_user_agent(user_agent.key, user_agent.value.to_byte_string());
-        spoofed_user_agent->setChecked(user_agent.key == user_agent_preset);
+        bool checked = user_agent.key == user_agent_name;
+        spoofed_user_agent->setChecked(checked);
     }
 
     auto* custom_user_agent_action = new QAction("Custom...", this);
     custom_user_agent_action->setCheckable(true);
+    custom_user_agent_action->setChecked(is_spoofed_agent_custom);
     user_agent_group->addAction(custom_user_agent_action);
     spoof_user_agent_menu->addAction(custom_user_agent_action);
-    QObject::connect(custom_user_agent_action, &QAction::triggered, this, [this, disable_spoofing] {
+    QObject::connect(custom_user_agent_action, &QAction::triggered, this, [this, disable_spoofing, update_user_agent_string] {
         auto user_agent = QInputDialog::getText(this, "Custom User Agent", "Enter User Agent:");
         if (!user_agent.isEmpty()) {
             auto user_agent_byte_string = ak_byte_string_from_qstring(user_agent);
             for_each_tab([&](auto& tab) {
                 tab.set_user_agent_string(user_agent_byte_string);
             });
-            set_user_agent_string(user_agent_byte_string);
+            update_user_agent_string(user_agent_byte_string, user_agent_byte_string);
         } else {
             disable_spoofing->activate(QAction::Trigger);
         }
